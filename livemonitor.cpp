@@ -1,50 +1,36 @@
 // ─────────────────────────────────────────────
-// ESP32 Water Level Monitor - Console Version
-// Sensor: JSN-SR04T UART (5V RX TX GND)
+// ESP32 Water Level Monitor - Pulse/Echo Version
 // ─────────────────────────────────────────────
 
 // ── Pin Configuration ─────────────────────────
-const int RX_PIN = 16;   // Connect to sensor TX
-const int TX_PIN = 17;   // Connect to sensor RX
+const int ECHO_PIN = 16;   // Connect to sensor TX
+const int TRIG_PIN = 17;   // Connect to sensor RX
 
 // ── Tank Configuration ────────────────────────
-const float TANK_DEPTH_CM   = 400.0;  // 4 metres ← Adjust after calibration
-const float MIN_DISTANCE_CM = 10.0;   // Gap at top when full ← Adjust
+const float TANK_DEPTH_CM   = 400.0;  // 4 metres 
+const float MIN_DISTANCE_CM = 10.0;   // Gap at top when full
 
 // ── Measurement Settings ──────────────────────
 const int NUM_SAMPLES = 5;
-const int SENSOR_BAUD = 9600;
-
-HardwareSerial sensorSerial(2);
 
 // ─────────────────────────────────────────────
-// Request measurement from sensor
-// ─────────────────────────────────────────────
-void requestMeasurement() {
-  sensorSerial.write(0x01);
-}
-
-// ─────────────────────────────────────────────
-// Read response - returns CM or -1 on error
+// Read response using Pulse/Echo
 // ─────────────────────────────────────────────
 float readDistance() {
-  unsigned long timeout = millis() + 100;
-  while (sensorSerial.available() < 4) {
-    if (millis() > timeout) return -1.0;
-    delay(1);
-  }
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(20); 
+  digitalWrite(TRIG_PIN, LOW);
 
-  byte b1 = sensorSerial.read();
-  byte b2 = sensorSerial.read();
-  byte b3 = sensorSerial.read();
-  byte b4 = sensorSerial.read();
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); 
 
-  if (b1 != 0xFF)                       return -1.0;
-  if (((b1 + b2 + b3) & 0xFF) != b4)   return -1.0;
+  if (duration == 0) return -1.0; // Timeout/No echo
 
-  float distanceCM = ((b2 << 8) + b3) / 10.0;
+  // Calculate distance in cm (Speed of sound = 343 m/s)
+  float distanceCM = (duration / 2.0) / 29.1;
 
-  if (distanceCM < 20.0 || distanceCM > 600.0) return -1.0;
+  if (distanceCM < 20.0 || distanceCM > 600.0) return -1.0; // Out of bounds
 
   return distanceCM;
 }
@@ -56,11 +42,7 @@ float measureDistance() {
   float readings[NUM_SAMPLES];
   int validCount = 0;
 
-  while (sensorSerial.available()) sensorSerial.read(); // flush buffer
-
   for (int i = 0; i < NUM_SAMPLES; i++) {
-    requestMeasurement();
-    delay(200);
     float r = readDistance();
     if (r > 0) readings[validCount++] = r;
     delay(100);
@@ -98,7 +80,7 @@ String getStatus(float pct) {
   if (pct >= 40.0) return "MEDIUM   ";
   if (pct >= 20.0) return "LOW      ";
   if (pct >= 5.0)  return "VERY LOW ";
-  return             "EMPTY    ";
+  return              "EMPTY    ";
 }
 
 // ─────────────────────────────────────────────
@@ -116,15 +98,12 @@ String drawBar(float pct) {
 
 // ─────────────────────────────────────────────
 // Print live updating display
-// Uses \r to overwrite lines in Serial Monitor
 // ─────────────────────────────────────────────
 void printDisplay(float distance, float pct) {
   String status = getStatus(pct);
   String bar    = drawBar(pct);
 
-  // Clear screen using ANSI escape (works in most terminals)
   Serial.print("\033[2J\033[H");
-
   Serial.println("=========================================");
   Serial.println("      ESP32 WATER LEVEL MONITOR         ");
   Serial.println("=========================================");
@@ -133,7 +112,7 @@ void printDisplay(float distance, float pct) {
   Serial.print  ("  Water     : "); Serial.print(pct, 1);      Serial.println(" %");
   Serial.print  ("  Status    : "); Serial.println(status);
   Serial.println();
-  Serial.print  ("  ");             Serial.println(bar);
+  Serial.print  ("  ");              Serial.println(bar);
   Serial.print  ("  0%        ");
   Serial.println("              100%");
   Serial.println();
@@ -152,10 +131,10 @@ void printError() {
   Serial.println("  !! SENSOR ERROR !!");
   Serial.println("  No valid reading received.");
   Serial.println("  Check wiring:");
-  Serial.println("    Sensor 5V  → ESP32 VIN");
-  Serial.println("    Sensor GND → ESP32 GND");
-  Serial.println("    Sensor TX  → ESP32 GPIO 16");
-  Serial.println("    Sensor RX  → ESP32 GPIO 17");
+  Serial.println("    Sensor 5V  -> ESP32 VIN");
+  Serial.println("    Sensor GND -> ESP32 GND");
+  Serial.println("    Sensor TX  -> ESP32 GPIO 16 (Echo)");
+  Serial.println("    Sensor RX  -> ESP32 GPIO 17 (Trigger)");
   Serial.println();
   Serial.println("  Retrying...");
   Serial.println("=========================================");
@@ -166,7 +145,8 @@ void printError() {
 // ─────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  sensorSerial.begin(SENSOR_BAUD, SERIAL_8N1, RX_PIN, TX_PIN);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
   delay(500);
   Serial.println("Starting...");
   delay(1000);
@@ -185,5 +165,5 @@ void loop() {
     printDisplay(distance, pct);
   }
 
-  delay(2000); // Update every 2 seconds
+  delay(2000); 
 }
