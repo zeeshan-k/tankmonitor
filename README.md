@@ -1,4 +1,56 @@
-# tankmonitor
+# ESP32 Water Level Monitor (Blynk IoT + JSN-SR04T)
+
+A robust, Wi-Fi-enabled IoT water level monitoring system built with an ESP32 and a JSN-SR04T waterproof ultrasonic sensor. 
+
+This project is designed for real-world water tanks. It features advanced acoustic noise filtering, spike rejection for turbulent water, rolling averages for stable UI displays, and seamless integration with the Blynk IoT platform for remote mobile monitoring.
+
+## Features
+* **Pulse/Echo Operation:** Fully compatible with factory-default JSN-SR04T sensors.
+* **Advanced Signal Filtering:** Handles sloshing water, acoustic echoes, and physical interference.
+* **Blynk IoT Integration:** Live mobile dashboard with percentage, filled capacity, and Wi-Fi health.
+* **Smart Rate Limiting:** Serial monitor updates every 5 seconds, while Blynk cloud updates every 60 seconds to protect free-tier message quotas.
+* **Graceful Error Handling:** System survives temporary sensor glitches without flashing immediate errors.
+
+---
+
+## Hardware Requirements
+* **Microcontroller:** ESP32 Development Board (e.g., DevKit V1).
+* **Sensor:** JSN-SR04T Waterproof Ultrasonic Distance Sensor.
+* **Power Supply:** 5V / 2A USB wall charger (Computer USB ports may not provide enough current for the sensor).
+
+## Wiring Diagram
+*Note: The JSN-SR04T must be powered from the ESP32's `VIN` pin (5V), NOT the 3.3V pin or the `VN` data pin.*
+
+| JSN-SR04T Pin | ESP32 Pin | Function |
+| :--- | :--- | :--- |
+| **5V** | **VIN** | 5V Power Supply |
+| **GND** | **GND** | Ground |
+| **RX** | **GPIO 17 (TX2)** | Trigger (Receives start pulse) |
+| **TX** | **GPIO 16 (RX2)** | Echo (Sends distance pulse) |
+
+---
+
+## How the Script Works (Core Logic)
+
+Water tanks are hostile environments for ultrasonic sensors. Condensation, sloshing water, splashing from inlet pipes, and sound waves bouncing off tank walls create highly erratic raw data. This script uses a 4-stage processing pipeline every 5 seconds to guarantee stable, accurate readings.
+
+### 1. Raw Batch Sampling
+Instead of taking one reading, the ESP32 fires **9 consecutive ultrasonic pulses** spaced 150ms apart. The 150ms delay acts as "acoustic padding," allowing stray sound waves to dissipate before the next ping.
+
+### 2. Outlier Filtering (Trimmed Mean)
+The script takes those 9 readings, sorts them from lowest to highest distance, and **trims (deletes) the top 2 and bottom 2 values**. 
+* Deleting the lowest values removes false "short" echoes (caused by mist or condensation).
+* Deleting the highest values removes false "deep" echoes (where the sound bounced off a wall instead of the water).
+The remaining 5 middle values are averaged to create a single clean reading.
+
+### 3. Spike Rejection Logic
+Even with a trimmed mean, a physical disturbance (like a frog crossing the beam, or a massive splash) can ruin a reading. 
+The script compares the new reading to the `lastValidDistance`. If the water level suddenly jumped by more than **30 cm in 5 seconds**, it is physically impossible for the tank to drain or fill that fast. The system categorizes this as a "Spike", rejects the reading, and holds the display steady using the last known good value.
+
+### 4. Rolling Average Smoothing
+To prevent the UI gauge from flickering back and forth by 1-2 percent due to tiny surface ripples, the script stores the last 4 valid, processed readings in a buffer. It outputs the average of this buffer, resulting in a perfectly smooth, slow-moving data readout.
+
+---
 
 # Configuration Parameters & Variables
 
@@ -44,3 +96,18 @@ These variables are used internally by the script to track data across loops. **
 *   `rollingBuffer[ROLLING_WINDOW]`: An array storing the history of recent measurements for the rolling average math.
 *   `rollingIndex` & `rollingCount`: Trackers managing the placement of new data into the rolling buffer.
 *   `lastBlynkPush`: Stores the exact timestamp (via `millis()`) of the last successful Blynk upload to manage the 60-second rate limit.
+
+---
+
+## Blynk Web Dashboard Setup (Free Tier)
+
+Set up your template Datastreams as follows:
+
+| Name | Virtual Pin | Data Type | Min / Max | Units | Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Water Percentage** | `V0` | Integer | 0 to 100 | `%` | Bind to Gauge/Level widgets |
+| **Filled Level** | `V1` | Double | 0 to (Empty - Full) | `cm` | Bind to Labeled Value widget |
+| **Status** | `V2` | String | - | - | Shows FULL, LOW, ERROR |
+| **Wi-Fi Status** | `V3` | String | - | - | Shows connection and RSSI strength |
+
+*Ensure your ESP32 is connected to a 2.4GHz Wi-Fi network, as 5GHz is not supported by the hardware.*
