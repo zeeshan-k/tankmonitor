@@ -158,12 +158,12 @@ float calculatePercentage(float distanceCm) {
 // Status label
 // ─────────────────────────────────────────────
 String getStatus(float pct) {
-  if (pct >= 90.0) return "FULL     ";
-  if (pct >= 60.0) return "HIGH     ";
-  if (pct >= 40.0) return "MEDIUM   ";
-  if (pct >= 20.0) return "LOW      ";
-  if (pct >= 5.0)  return "VERY LOW ";
-  return                  "EMPTY    ";
+  if (pct >= 85.0) return "FULL     ";
+  if (pct >= 65.0) return "HIGH     ";
+  if (pct >= 50.0) return "MEDIUM   ";
+  if (pct >= 30.0) return "LOW      ";
+  if (pct >= 10.0)  return "CRITICAL ";
+  return                   "EMPTY    ";
 }
 
 // ─────────────────────────────────────────────
@@ -187,10 +187,10 @@ void printDisplay(float rawDistance, float smoothedDistance, float pct, bool isS
   String bar    = drawBar(pct);
   float filledLevel = TANK_EMPTY_CM - smoothedDistance;
   String wifiStat = (WiFi.status() == WL_CONNECTED) ? "Connected (" + String(WiFi.RSSI()) + " dBm)" : "Disconnected";
-
-  Serial.print("\033[2J\033[H");
+  
+  Serial.println("\n\n\n");
   Serial.println("=========================================");
-  Serial.println("      ESP32 WATER LEVEL MONITOR         ");
+  Serial.println("         * WATER LEVEL MONITOR *         ");
   Serial.println("=========================================");
   Serial.println();
   Serial.print  ("  Raw reading  : "); Serial.print(rawDistance, 1);      Serial.println(" cm");
@@ -235,7 +235,7 @@ void pushToBlynk(float pct, float distance, String statusStr) {
 // Error Handling
 // ─────────────────────────────────────────────
 void printError() {
-  Serial.print("\033[2J\033[H");
+  Serial.println("\n\n\n");
   Serial.println("=========================================");
   Serial.println("      ESP32 WATER LEVEL MONITOR         ");
   Serial.println("=========================================");
