@@ -1,11 +1,9 @@
 // ═════════════════════════════════════════════════════════════════
 //        ESP32 WATER LEVEL MONITOR - JSN-SR04T (Pulse/Echo)
-//        With noise filtering & Blynk IoT Wi-Fi Integration
+//        With noise filtering, Wi-Fi Stats, & Blynk Rate Limiting
 // ═════════════════════════════════════════════════════════════════
 
 // ── BLYNK CONFIGURATION ───────────────────────────────────────────
-// IMPORTANT: These three lines MUST be the very first lines before any includes.
-// Copy these exactly as provided by your Blynk Web Dashboard.
 #define BLYNK_TEMPLATE_ID "TMPLxxxxxxxxxxx"
 #define BLYNK_TEMPLATE_NAME "Water Level"
 #define BLYNK_AUTH_TOKEN "************************"
@@ -16,25 +14,25 @@
 #include <BlynkSimpleEsp32.h>
 
 // ── WI-FI CONFIGURATION ───────────────────────────────────────────
-// Must be a 2.4GHz network. 5GHz networks are not visible to ESP32.
 char ssid[] = "**************************";
 char pass[] = "**************************";
 
 // ── PIN CONFIGURATION ─────────────────────────────────────────────
-const int TRIG_PIN = 17;        // Trigger pin -> connect to sensor TRIG
-const int ECHO_PIN = 16;        // Echo pin    -> connect to sensor ECHO
+const int TRIG_PIN = 17;        
+const int ECHO_PIN = 16;        
 
 // ── TANK CONFIGURATION ────────────────────────────────────────────
-const float TANK_EMPTY_CM     = 400.0;
-const float TANK_FULL_CM      = 150.0;
+const float TANK_EMPTY_CM     = 200.0;
+const float TANK_FULL_CM      = 10.0;
 
 // ── DISPLAY / TIMING ──────────────────────────────────────────────
-const int REFRESH_INTERVAL_MS = 5000;   // Update interval in milliseconds
+const int REFRESH_INTERVAL_MS = 5000;           // Serial monitor update (5 sec)
+const unsigned long BLYNK_UPDATE_MS = 60000;    // Blynk push interval (60 sec)
 
 // ── MEASUREMENT QUALITY ───────────────────────────────────────────
-const int NUM_SAMPLES         = 9;      // Samples per cycle
-const int SAMPLE_DELAY_MS     = 150;    // Delay between samples (ms)
-const int ECHO_TIMEOUT_US     = 40000;  // Echo timeout in microseconds
+const int NUM_SAMPLES         = 9;      
+const int SAMPLE_DELAY_MS     = 150;    
+const int ECHO_TIMEOUT_US     = 40000;  
 
 // ── OUTLIER FILTERING ─────────────────────────────────────────────
 const int OUTLIER_TRIM        = 2;
@@ -42,11 +40,11 @@ const int OUTLIER_TRIM        = 2;
 // ── SPIKE REJECTION ───────────────────────────────────────────────
 const float MAX_CHANGE_CM     = 30.0;
 
-// ── ROLLING AVERAGE (SMOOTHING OVER TIME) ─────────────────────────
+// ── ROLLING AVERAGE ───────────────────────────────────────────────
 const int ROLLING_WINDOW      = 4;
 
 // ── ERROR HANDLING ────────────────────────────────────────────────
-const int ERROR_THRESHOLD     = 3;      // Consecutive failures before error screen
+const int ERROR_THRESHOLD     = 3;      
 
 // ═════════════════════════════════════════════════════════════════
 //   VARIABLES & TIMERS
@@ -57,8 +55,9 @@ int   consecutiveErrors       = 0;
 float rollingBuffer[ROLLING_WINDOW];
 int   rollingIndex            = 0;
 int   rollingCount            = 0;
+unsigned long lastBlynkPush   = 0;
 
-BlynkTimer timer; // Timer to handle non-blocking sensor updates
+BlynkTimer timer; 
 
 // ─────────────────────────────────────────────
 // Single pulse/echo reading
@@ -96,7 +95,6 @@ float measureDistance() {
 
   if (validCount == 0) return -1.0;
 
-  // Sort ascending
   for (int i = 0; i < validCount - 1; i++)
     for (int j = 0; j < validCount - i - 1; j++)
       if (readings[j] > readings[j + 1]) {
@@ -105,7 +103,6 @@ float measureDistance() {
         readings[j+1]  = t;
       }
 
-  // Trim outliers from both ends
   int trimStart = OUTLIER_TRIM;
   int trimEnd   = validCount - OUTLIER_TRIM;
 
@@ -188,6 +185,8 @@ String drawBar(float pct) {
 void printDisplay(float rawDistance, float smoothedDistance, float pct, bool isStale) {
   String status = getStatus(pct);
   String bar    = drawBar(pct);
+  float filledLevel = TANK_EMPTY_CM - smoothedDistance;
+  String wifiStat = (WiFi.status() == WL_CONNECTED) ? "Connected (" + String(WiFi.RSSI()) + " dBm)" : "Disconnected";
 
   Serial.print("\033[2J\033[H");
   Serial.println("=========================================");
@@ -195,11 +194,14 @@ void printDisplay(float rawDistance, float smoothedDistance, float pct, bool isS
   Serial.println("=========================================");
   Serial.println();
   Serial.print  ("  Raw reading  : "); Serial.print(rawDistance, 1);      Serial.println(" cm");
-  Serial.print  ("  Smoothed     : "); Serial.print(smoothedDistance, 1); Serial.println(" cm");
-  Serial.print  ("  Water level  : "); Serial.print(pct, 1);              Serial.println(" %");
+  Serial.print  ("  Filled Level : "); Serial.print(filledLevel, 1);      Serial.println(" cm");
+  Serial.print  ("  Water volume : "); Serial.print(pct, 1);              Serial.println(" %");
   Serial.print  ("  Status       : "); Serial.println(status);
+  Serial.print  ("  Wi-Fi        : "); Serial.println(wifiStat);
+  
   if (isStale)
   Serial.println("  (last good reading - sensor retrying)");
+  
   Serial.println();
   Serial.print  ("  ");                Serial.println(bar);
   Serial.println("  0%                              100%");
@@ -213,13 +215,19 @@ void printDisplay(float rawDistance, float smoothedDistance, float pct, bool isS
 }
 
 // ─────────────────────────────────────────────
-// Push Data to Blynk Cloud
+// Push Data to Blynk Cloud (Rate Limited)
 // ─────────────────────────────────────────────
 void pushToBlynk(float pct, float distance, String statusStr) {
-  if (Blynk.connected()) {
-    Blynk.virtualWrite(V0, pct);         // V0 = Percentage
-    Blynk.virtualWrite(V1, distance);    // V1 = Distance in cm
-    Blynk.virtualWrite(V2, statusStr);   // V2 = Status text
+  if (Blynk.connected() && (millis() - lastBlynkPush >= BLYNK_UPDATE_MS || lastBlynkPush == 0)) {
+    float filledLevel = TANK_EMPTY_CM - distance;
+    String wifiStat = (WiFi.status() == WL_CONNECTED) ? "Connected (" + String(WiFi.RSSI()) + " dBm)" : "Offline";
+
+    Blynk.virtualWrite(V0, pct);         
+    Blynk.virtualWrite(V1, filledLevel); 
+    Blynk.virtualWrite(V2, statusStr);   
+    Blynk.virtualWrite(V3, wifiStat);    
+    
+    lastBlynkPush = millis();
   }
 }
 
@@ -239,9 +247,10 @@ void printError() {
   Serial.println("  Retrying...");
   Serial.println("=========================================");
   
-  // Push an error indicator to Blynk
-  if (Blynk.connected()) {
+  // Rate limited error push
+  if (Blynk.connected() && (millis() - lastBlynkPush >= BLYNK_UPDATE_MS || lastBlynkPush == 0)) {
     Blynk.virtualWrite(V2, "SENSOR ERROR");
+    lastBlynkPush = millis();
   }
 }
 
@@ -276,7 +285,6 @@ void processWaterLevel() {
     }
 
   } else {
-    // Good reading
     consecutiveErrors = 0;
     lastValidDistance = rawDistance;
 
@@ -301,21 +309,45 @@ void setup() {
   for (int i = 0; i < ROLLING_WINDOW; i++)
     rollingBuffer[i] = 0.0;
 
-  Serial.println("Connecting to Wi-Fi and Blynk...");
+  Serial.println("\n--- BOOTING ---");
+  Serial.print("Connecting to Wi-Fi (");
+  Serial.print(ssid);
+  Serial.print(") ");
   
-  // Initialize Blynk connection
-  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+  WiFi.begin(ssid, pass);
+  int attempts = 0;
+  
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  Serial.println();
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Wi-Fi Connected Successfully!");
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  } else {
+    Serial.println("Wi-Fi Connection Failed!");
+    Serial.println("System will continue attempting to connect in the background.");
+  }
 
-  // Set the timer to run the measurement function every REFRESH_INTERVAL_MS
+  Serial.println("Starting Blynk connection...");
+  Blynk.config(BLYNK_AUTH_TOKEN);
+  Blynk.connect();
+
   timer.setInterval(REFRESH_INTERVAL_MS, processWaterLevel);
-
-  Serial.println("ESP32 Water Level Monitor starting...");
+  Serial.println("ESP32 Water Level Monitor starting in 2 seconds...");
+  delay(2000);
 }
 
 // ─────────────────────────────────────────────
-// Loop (Keep perfectly clean for Blynk)
+// Loop
 // ─────────────────────────────────────────────
 void loop() {
-  Blynk.run();   // Keeps the connection to Blynk alive
-  timer.run();   // Checks if 5 seconds have passed and triggers a reading
+  Blynk.run();   
+  timer.run();   
 }
